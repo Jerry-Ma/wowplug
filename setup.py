@@ -18,6 +18,7 @@ metadata = dict(conf.items('metadata'))
 with open(path.join(here, metadata.get(
         'description-file', 'README.md')), encoding='utf-8') as f:
     long_description = f.read()
+    long_description_content_type = "text/plain; charset=UTF-8"
 
 # Define entry points for command-line scripts
 entry_points = {'console_scripts': []}
@@ -41,20 +42,22 @@ extras_require = {
         ]}
 setup(
     setup_requires=["setuptools-git", 'setuptools-git-version'],
-    name='wowplug',
     version_format='0.0.dev{commitcount}+{gitsha}',
-    description='An addon manager for WOW',
+    name=metadata['package_name'],
+    description=metadata['description'],
     long_description=long_description,
-    author='Jerry Ma',
-    author_email='jerry.ma.nk@gmail.com',
-    url='https://github.com/Jerry-Ma/wowplug',
-    license='BSD',
+    long_description_content_type=long_description_content_type,
+    author=metadata['author'],
+    author_email=metadata['author_email'],
+    license=metadata['license'],
+    url=metadata['url'],
     classifiers=[
       'Development Status :: 3 - Alpha',
       'Intended Audience :: Developers',
       'Programming Language :: Python :: 3',
     ],
-    keywords='',
+    platforms='any',
+    keywords=['game', 'utility'],
     packages=find_packages(exclude=['docs', 'tests*']),
     include_package_data=True,
     exclude_package_data={

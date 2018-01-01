@@ -129,9 +129,9 @@ class CurseForge(AddonProvider):
         by `Curseforge` site trough its searching form. Otherwise it always
         returns ``False``.
 
-        .. note::
+        .. todo::
 
-            TODO: Add a database to cache the search results, which can be used
+            Add a database to cache the search results, which can be used
             as source when the optional packages mentioned above are not
             available (need to caution about the `Curseforge` ToS, though).
         """
