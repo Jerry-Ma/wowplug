@@ -3,14 +3,10 @@
 # Create Date    :  2017-12-26 21:51
 # Git Repo       :  https://github.com/Jerry-Ma
 # Email Address  :  jerry.ma.nk@gmail.com
-"""
-main.py
-"""
+
 
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
-from docopt import docopt
-from schema import Schema, Or, SchemaError
 from collections import OrderedDict
 import os
 import sys
@@ -19,14 +15,24 @@ import logging
 import logging.config
 from textwrap import indent
 import pkg_resources
+from docopt import docopt
+from schema import Schema, Or, SchemaError
 
 
 __all__ = ['cli', ]
+
 LOGGER_NAME = 'cli'
 
 
 def cli():
-    cmderr_fmt = "ERROR: {}"
+    """Command line interface of :mod:`wowplug`. Run
+
+    .. code-block:: sh
+
+        $ wowplug --help
+
+    for an extensive description.
+    """
     doc = """
 An addon manager for World of Warcraft.
 
@@ -42,8 +48,9 @@ Options:
     -v --version        Show version.
     -d --debug          Show debug messages.
     -n --ignore-config  Ignore previously saved config file
-    """
+"""
 
+    cmderr_fmt = "ERROR: {}"
     cmds = OrderedDict()
 
     def register_cmd(cmd):

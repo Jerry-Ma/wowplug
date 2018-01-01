@@ -4,9 +4,10 @@
 # Git Repo       :  https://github.com/Jerry-Ma
 # Email Address  :  jerry.ma.nk@gmail.com
 """
-yaml.py
-"""
+Patch :mod:`pyyaml` to allow using with :obj:`OrderedDict`
 
+See: https://stackoverflow.com/a/16782282
+"""
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
@@ -15,7 +16,8 @@ from collections import OrderedDict
 
 
 def represent_odict(dump, tag, mapping, flow_style=None):
-    """Like BaseRepresenter.represent_mapping, but does not issue the sort().
+    """Like :meth:`BaseRepresenter.represent_mapping`, but
+    does not issue the :meth:`sort`.
     """
     value = []
     node = yaml.MappingNode(tag, value, flow_style=flow_style)

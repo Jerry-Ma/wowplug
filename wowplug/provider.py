@@ -3,34 +3,31 @@
 # Create Date    :  2017-12-30 13:11
 # Git Repo       :  https://github.com/Jerry-Ma
 # Email Address  :  jerry.ma.nk@gmail.com
-"""
-provider.py
-"""
-
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
-import requests
 import functools
 import logging
-# import json
 import io
 import zipfile
 import re
 import os
-# import errno
 import posixpath
-# from .yaml import yaml
+
+import requests
 from .config import config
 
 
-def urljoin(*args):
-    return posixpath.join(*[a.strip("/") for a in args])
+__all__ = ['AddonProvider', 'GithubProvider', 'CurseForge']
 
 
 class AddonProvider(object):
+    """Base class that all provider classes should be derived from. It
+    also manages a list of available concrete providers."""
 
     is_concrete_provider = False
+    """A subclass is added to the provider list if set to ``True``"""
+
     _providers = []
 
     def __init__(self):
@@ -43,19 +40,39 @@ class AddonProvider(object):
 
     @classmethod
     def providers(cls):
+        """Return a list of available provider classes."""
         return cls._providers
 
     @property
     def name(self):
+        """Convenience attribute to the name of the class. It is used
+        as the key to identify the provider."""
         return self.__class__.__name__
 
 
 class GithubProvider(AddonProvider):
+    """Class that manages addons provided through `Github`."""
+
     repo_url_base = 'https://api.github.com/repos'
-    content_url = "contents"
+    """URL to connect to a `Github` repository."""
+
+    contents_url = "contents"
+    """URL path to the contents of a `Github` repository."""
 
     @classmethod
     def create(cls, spec):
+        """Factory method that assemble a class that represents
+        specific `Github` repository.
+
+        The repository may provide one or more addons. The created class will
+        be available through :meth:`AddonProvider.providers`.
+
+        :param spec: Dictionary that contains specification of the
+            provider to be created. It shall have a ``repo`` key, which
+            specifies the name of the repository, and a ``addon_path`` key,
+            which is the path relative to the repository's root to the folder
+            that contains the addons.
+        """
         logger = logging.getLogger("provider")
         name = spec['repo'].strip("/").split("/")[-1]
         gp = type(name, (cls, ), {
@@ -68,9 +85,10 @@ class GithubProvider(AddonProvider):
 
     @functools.lru_cache()
     def addons(self):
-        url = urljoin(
+        """Return the names of addons provided."""
+        url = _urljoin(
                 self.repo_url_base, self.repo,
-                self.content_url, self.addon_path)
+                self.contents_url, self.addon_path)
         r = requests.get(url)
         if r.status_code == 404 or 'message' in r:
             self.logger.warning("unable to get addon list at {}".format(url))
@@ -81,19 +99,42 @@ class GithubProvider(AddonProvider):
         return a
 
     def has_addon(self, name):
+        """Return ``True`` if an addon named `name` is provided."""
         return name in self.addons()
 
     def spec(self):
+        """Return the spec dict of this addon provider."""
         return dict(repo=self.repo, addon_path=self.addon_path)
 
 
 class CurseForge(AddonProvider):
+    """
+    Class that manages addons provided through `Curseforge`.
+    """
     # search_url = 'https://wow.curseforge.com/search/get-results?'
+
     is_concrete_provider = True
+    """Identify this class as a concrete provider"""
+
     url_base = 'https://www.curseforge.com'
+    """URL of `Curseforge` site"""
+
     search_url = 'wow/addons/search?'
+    """URL path to the search form"""
 
     def __init__(self):
+        """
+        If :mod:`PyQt5`, :mod:`BeautifulSoup`, and :mod:`fuzzywuzzy` are
+        available, calling :meth:`has_addon` will test if an addon is provided
+        by `Curseforge` site trough its searching form. Otherwise it always
+        returns ``False``.
+
+        .. note::
+
+            TODO: Add a database to cache the search results, which can be used
+            as source when the optional packages mentioned above are not
+            available (need to caution about the `Curseforge` ToS, though).
+        """
         super().__init__()
         # methods for querying curseforge site
         self.render_class = None
@@ -103,7 +144,7 @@ class CurseForge(AddonProvider):
             from . import qt_web
             from bs4 import BeautifulSoup
             from fuzzywuzzy import process
-            self.render_class = qt_web.Render
+            self.render_class = qt_web.Renderer
             self.parser_class = BeautifulSoup
             self.fuzzy_match = process.extract
         except ImportError:
@@ -114,19 +155,20 @@ class CurseForge(AddonProvider):
                     " fuzzywuzzy")
 
     def has_addon(self, name):
-        # query the CurseForge site
+        """Return ``True`` if an addon named `name` is provided."""
+
         self.logger.debug("search `{}` in CurseForge".format(name))
-        cands = self.search(name)
+        cands = self._search(name)
         # do fuzzy search if there is no hit
         if cands is None:
             _cands = []
-            keys = self.make_fuzzy_search_keys(name)
+            keys = self._make_fuzzy_search_keys(name)
             if not keys:
                 return False
             self.logger.debug("no hit. try fuzzy search keys: {}".format(
                 keys))
             for key in keys:
-                cand = self.search(key)
+                cand = self._search(key)
                 if cand is not None:
                     _cands.extend(cand)
             # remove duplicates
@@ -161,6 +203,9 @@ class CurseForge(AddonProvider):
 
     @functools.lru_cache()
     def addons(self, name):
+        """
+        Return a list of addons provided by `name` through `CurseForge`.
+        """
         self.logger.debug("looking for addon names in {}".format(name))
         dl_url = '{}/wow/addons/{}/download'.format(self.url_base, name)
         re_file_url = r'href="(/wow/addons/{}/download/\d+/file)"'.format(
@@ -176,7 +221,7 @@ class CurseForge(AddonProvider):
             self.logger.debug("unable to get download page")
             return
         # query file
-        file_url = urljoin(self.url_base, file_url)
+        file_url = _urljoin(self.url_base, file_url)
         r = requests.get(file_url)
         if r.ok:
             zn = r.url.split("/")[-1]
@@ -192,17 +237,18 @@ class CurseForge(AddonProvider):
             return addons, {'version': ver, 'zipfile': zf}
 
     @functools.lru_cache()
-    def search(self, key):
+    def _search(self, key):
+        """Returns search result from `Curseforge` with search key `key`"""
         if self.render_class is None:
             return None
         render = self.render_class()
-        render.query(urljoin(self.url_base, self.search_url), params={
+        render.query(_urljoin(self.url_base, self.search_url), params={
                     'search': key,
                     # 'providerIdent': 'projects'
                     })
-        return self.parse_search_result(render.html, search_key=key)
+        return self._parse_search_result(render.html, search_key=key)
 
-    def parse_search_result(self, html, **kwargs):
+    def _parse_search_result(self, html, **kwargs):
         soup = self.parser_class(html, 'html.parser')
         logger = self.logger
         logger.debug("parse search result for `{}`".format(
@@ -248,13 +294,13 @@ class CurseForge(AddonProvider):
                     c['href'].split('/')[-1] for c in cats]
             dl = row.select(
                     'div.list-item__actions a.button--download')[0]
-            addon['curse_download_url'] = urljoin(self.url_base, dl['href'])
+            addon['curse_download_url'] = _urljoin(self.url_base, dl['href'])
             # addon['curse_download_url_params'] = json.loads(
             #         dl['data-action-value'])
             addons.append(addon)
         return addons
 
-    def make_fuzzy_search_keys(self, name):
+    def _make_fuzzy_search_keys(self, name):
         blacklist = config.get('curseforge.search.blacklist')
         if blacklist is None:
             blacklist = []
@@ -267,3 +313,9 @@ class CurseForge(AddonProvider):
         if name in stems:
             stems.remove(name)
         return [s for s in stems if s not in blacklist and s != name]
+
+
+# some internal stuff
+def _urljoin(*args):
+    return posixpath.join(*[a.rstrip("/") if i == 0 else a.strip("/")
+                            for i, a in enumerate(args)])

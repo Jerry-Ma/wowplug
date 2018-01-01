@@ -3,27 +3,25 @@
 # Create Date    :  2017-12-28 10:00
 # Git Repo       :  https://github.com/Jerry-Ma
 # Email Address  :  jerry.ma.nk@gmail.com
-"""
-qt_web.py
-"""
-
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
+import logging
+import sys
 
 from PyQt5.QtCore import QUrl, QUrlQuery
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
-# from PyQt5.QtGui import QIcon
-# import PyQt5
-import logging
-import sys
 from PyQt5.QtWidgets import QApplication
 
 
-class Render(QWebEngineView):
+__all__ = ['Renderer', ]
 
-    UA = ("Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36")
+
+class Renderer(QWebEngineView):
+    """Class to render a remote site"""
+
+    _UA = ("Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36"
+           " (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36")
 
     def __init__(self):
         self.logger = logging.getLogger("webengine")
@@ -33,11 +31,14 @@ class Render(QWebEngineView):
         if _app is None:
             self.logger.debug("create qt web engine app")
             _app = QApplication(sys.argv)
-        QWebEngineProfile.defaultProfile().setHttpUserAgent(self.UA)
+        QWebEngineProfile.defaultProfile().setHttpUserAgent(self._UA)
         QWebEngineView.__init__(self)
         self.loadFinished.connect(self._loadFinished)
 
     def query(self, url, params):
+        """Load `url` with `params` and make the contents available
+        through :attr:`self.html` upon finishing. This method blocks until
+        the content is loaded."""
         u = QUrl(url)
         q = QUrlQuery()
         for k, v in params.items():

@@ -31,8 +31,13 @@ sys.path.insert(0, os.path.abspath('../..'))
 # ones.
 extensions = [
     'sphinx.ext.autodoc',
+    'sphinx.ext.inheritance_diagram',
+    'sphinx.ext.viewcode',
+    'sphinx_automodapi.automodapi',
+    # 'sphinx.ext.intersphinx',
+    # 'sphinx_automodapi.smart_resolver',
 ]
-
+autoclass_content = 'both'
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
@@ -49,7 +54,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = 'wowplug'
-copyright = '2016, Jerry Ma'
+copyright = '2017, Jerry Ma'
 author = 'Jerry Ma'
 
 # The version info for the project you're documenting, acts as replacement for

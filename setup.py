@@ -36,7 +36,8 @@ extras_require = {
             'sphinx_rtd_theme',
             'nose',
             'coverage',
-            'pypi-publisher'
+            'pypi-publisher',
+            'sphinx-automodapi'
         ]}
 setup(
     setup_requires=["setuptools-git", 'setuptools-git-version'],

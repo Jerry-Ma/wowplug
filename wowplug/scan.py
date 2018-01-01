@@ -9,13 +9,12 @@ scan.py
 
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
-
 import os
 import re
 import glob
 import logging
 from collections import OrderedDict
-from .yaml import yaml
+from .omap_yaml import yaml
 from .provider import GithubProvider, AddonProvider
 from .config import config
 
@@ -74,16 +73,6 @@ def scan(scandir, output_file=None):
     output['skipped'] = [
             a['toc_name'] for a in addons
             if a['toc_name'] not in collected]
-    # for addon in addons:
-    #     # here we go through the provider lists to get
-    #     # a list of sources that provide this addon.
-    #     name = addon['toc_name']
-    #     srcs = []
-    #     for provider in AddonProvider.providers():
-    #         src = provider.query(name)
-    #         if src is not None:
-    #             srcs.append(src)
-    #     output['addons'][name] = srcs
     # append some config data
     output['scan'] = {
             'dir': scandir}
@@ -95,7 +84,7 @@ def scan(scandir, output_file=None):
 
 
 def resolve_addon(toc):
-    """parse an addon TOC file to get meta data
+    """Parse the TOC file of an addon to get meta data.
     """
     tocdir, tocbase = os.path.split(toc)
     tocstem = os.path.splitext(tocbase)[0]
