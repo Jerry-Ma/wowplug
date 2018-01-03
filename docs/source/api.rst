@@ -13,5 +13,5 @@
 .. automodapi:: wowplug.scan
     :no-inheritance-diagram:
 
-.. automodapi:: wowplug.omap_yaml
+.. automodapi:: wowplug.utils
     :no-inheritance-diagram:

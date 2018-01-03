@@ -53,7 +53,8 @@ setup(
     url=metadata['url'],
     classifiers=[
       'Development Status :: 3 - Alpha',
-      'Intended Audience :: Developers',
+      'Topic :: Games/Entertainment',
+      'Intended Audience :: End Users/Desktop',
       'Programming Language :: Python :: 3',
     ],
     platforms='any',

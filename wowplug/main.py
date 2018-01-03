@@ -17,6 +17,7 @@ from textwrap import indent
 import pkg_resources
 from docopt import docopt
 from schema import Schema, Or, SchemaError
+from .utils import norm_path
 
 
 __all__ = ['cli', ]
@@ -89,7 +90,7 @@ Options:
                     # update to config entry if specified
                     '--output': {
                         'key': 'sync.file',
-                        'norm': _normalize_path,
+                        'norm': norm_path,
                         'from': lambda a, c: False,
                         'to': lambda a, c: a is not None,
                         },
@@ -242,7 +243,3 @@ def _sync_args_with_config(args, config, sync_policy):
             config.set(ck, args[ak])
             tc.append(ak)
     return args, fc, tc
-
-
-def _normalize_path(p):
-    return os.path.abspath(os.path.expanduser(p))

@@ -1,21 +1,50 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
-# Create Date    :  2017-12-30 14:40
+# Create Date    :  2018-01-02 14:40
 # Git Repo       :  https://github.com/Jerry-Ma
 # Email Address  :  jerry.ma.nk@gmail.com
-"""
-Patch :mod:`pyyaml` to allow using with :obj:`OrderedDict`
-
-See: https://stackoverflow.com/a/16782282
-"""
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
+from functools import lru_cache
+import posixpath
+import os
 import yaml
 from collections import OrderedDict
 
 
-def represent_odict(dump, tag, mapping, flow_style=None):
+__all__ = [
+        'instance_method_lru_cache', 'log_and_raise',
+        'urljoin', 'norm_path', 'yaml']
+
+
+instance_method_lru_cache = lru_cache
+"""
+.. todo::
+
+    Find a way to implement this.
+"""
+
+
+def log_and_raise(logger_func, msg, exc):
+    """Log message `msg` to `logger_func` and raise `exc` with the same
+    message."""
+    logger_func(msg)
+    raise exc(msg)
+
+
+def urljoin(*args):
+    """Join URL segments and *ignore* the leading slash ``/``."""
+    return posixpath.join(*[a.rstrip("/") if i == 0 else a.strip("/")
+                            for i, a in enumerate(args)])
+
+
+def norm_path(p):
+    """Return absolute path with user ``~`` expanded for path `p`."""
+    return os.path.abspath(os.path.expanduser(p))
+
+
+def _represent_odict(dump, tag, mapping, flow_style=None):
     """Like :meth:`BaseRepresenter.represent_mapping`, but
     does not issue the :meth:`sort`.
     """
@@ -45,5 +74,10 @@ def represent_odict(dump, tag, mapping, flow_style=None):
 
 yaml.SafeDumper.add_representer(
         OrderedDict,
-        lambda dumper, value: represent_odict(
+        lambda dumper, value: _represent_odict(
             dumper, u'tag:yaml.org,2002:map', value))
+"""
+Patch :mod:`pyyaml` to allow using with :obj:`OrderedDict`
+
+See: https://stackoverflow.com/a/16782282
+"""

@@ -10,7 +10,7 @@ import os
 import errno
 import logging
 from appdirs import AppDirs
-from .omap_yaml import yaml
+from .utils import yaml
 
 
 __all__ = ['Config', 'config']
@@ -40,9 +40,10 @@ scan:
 sync:
     file:
 
-github_providers:
-  - repo: fgprodigal/RayUI
-    addon_path: Interface/AddOns
+github:
+    providers:
+      - repo: fgprodigal/RayUI
+        path: Interface/AddOns
 
 curseforge:
     search:

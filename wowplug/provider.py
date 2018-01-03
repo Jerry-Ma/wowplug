@@ -6,52 +6,151 @@
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
-import functools
 import logging
 import io
-import zipfile
+from zipfile import ZipFile
 import re
 import os
-import posixpath
+import abc
+from collections import OrderedDict
+from inspect import isabstract
 
 import requests
 from .config import config
+from .utils import instance_method_lru_cache, log_and_raise, urljoin
 
 
-__all__ = ['AddonProvider', 'GithubProvider', 'CurseForge']
+__all__ = [
+        'AddonProvider', 'AddonSource',
+        'Github', 'GithubRepo',
+        'Curseforge', 'CurseProject',
+        ]
 
 
-class AddonProvider(object):
-    """Base class that all provider classes should be derived from. It
-    also manages a list of available concrete providers."""
+class AddonProvider(abc.ABC):
+    """Abstract base class that all provider classes should be
+    derived from.
 
-    is_concrete_provider = False
-    """A subclass is added to the provider list if set to ``True``"""
+    It manages a list of available concrete providers at class level, and a
+    list of available addon sources at instance level.
+    """
 
-    _providers = []
+    providers = OrderedDict()
+    """List of available :obj:`AddonProvider` instances."""
 
-    def __init__(self):
-        self.logger = logging.getLogger(self.__class__.__name__)
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if cls.is_concrete_provider:
-            cls._providers.append(cls())
-
-    @classmethod
-    def providers(cls):
-        """Return a list of available provider classes."""
-        return cls._providers
-
-    @property
+    @abc.abstractproperty
     def name(self):
         """Convenience attribute to the name of the class. It is used
         as the key to identify the provider."""
-        return self.__class__.__name__
+        return NotImplemented
+
+    @abc.abstractproperty
+    def metadata(self):
+        """Dict of some useful information."""
+        return NotImplemented
+
+    @abc.abstractmethod
+    def __init__(self):
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self._sources = OrderedDict()
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        logger = logging.getLogger(AddonProvider.__name__)
+        if not isabstract(cls):
+            if cls.name in cls.providers:
+                logger.warning(
+                        "name collision when adding provider {}".format(
+                            cls.name))
+            cls.providers[cls.name] = cls()
+
+    @abc.abstractmethod
+    def setup_sources(self, toc_names):
+        """Create and setup a list of :obj:`AddonSource` instances
+        that *may* provide the addons with TOCs `toc_names`.
+
+        This method shall be implemented by subclasses and decorated
+        with :meth:`finish_setup_sources` to make the sources
+        available in :attr:`sources`.
+        """
+        return NotImplemented
+
+    def finish_setup_sources(self, sources):
+        """Make `sources` available to :meth:`sources` method.
+
+        Subclass should call this method at the end of its implementation of
+        :meth:`setup_sources`.
+        """
+        self.logger.debug("setup sources for {}: {}".format(
+            self.name, [s.name for s in sources]))
+        for source in sources:
+            if source.name in self._sources:
+                self.logger.warning(
+                        "name collision when setup source {}".format(
+                            source.name))
+            self._sources[source.name] = source
+        self.logger.debug("sources added to {}: {}".format(
+            self.name, [s.name for s in self.sources.values()]))
+
+    @property
+    def sources(self):
+        """Return a list of available :obj:`AddonSource` instances.
+
+        .. note::
+
+            The returned list is only populated after the call of
+            :meth:`setup_sources`, which should be decorated with
+            :meth:`finish_setup_sources`.
+        """
+        return self._sources
+
+    def has_toc(self, toc_name):
+        """Return ``True`` if the sources of this provider provide addon
+        of TOC `toc_name`."""
+
+        return any(s.has_toc(toc_name) for s in self.sources)
 
 
-class GithubProvider(AddonProvider):
-    """Class that manages addons provided through `Github`."""
+class AddonSource(abc.ABC):
+    """Abstract base class of classes that provide access to addons.
+    """
+
+    @abc.abstractproperty
+    def name(self):
+        """Name to identify the addon source."""
+        return NotImplemented
+
+    @abc.abstractproperty
+    def addons(self):
+        """A list of addons provided by the sources."""
+        return NotImplemented
+
+    def __init__(self, provider):
+        """
+        :param provider: provider this addon source belongs to.
+        """
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.provider = provider
+        self.logger.debug("create addon source {}".format(self.name))
+
+    def has_toc(self, toc_name):
+        """
+        Return ``True`` if the addon source provides addon with TOC of
+        `toc_name`.
+        """
+        return toc_name in self.addons
+
+    def __repr__(self):
+        return super().__repr__().replace(self.__class__.__name__, self.name)
+
+
+class Github(AddonProvider):
+    """Class that manages addons provided through `Github`.
+
+    :ivar specs: List of specs of `Github` repositories that provide addons.
+        A predefined set of repositories is read from config item
+        ``github.providers``
+    """
 
     repo_url_base = 'https://api.github.com/repos'
     """URL to connect to a `Github` repository."""
@@ -59,81 +158,127 @@ class GithubProvider(AddonProvider):
     contents_url = "contents"
     """URL path to the contents of a `Github` repository."""
 
-    @classmethod
-    def create(cls, spec):
-        """Factory method that assemble a class that represents
-        specific `Github` repository.
+    name = "github"
+    """Name of this provider."""
 
-        The repository may provide one or more addons. The created class will
-        be available through :meth:`AddonProvider.providers`.
+    def __init__(self):
+        super().__init__()
+        self.specs = config.get("github.providers")
 
-        :param spec: Dictionary that contains specification of the
-            provider to be created. It shall have a ``repo`` key, which
-            specifies the name of the repository, and a ``addon_path`` key,
-            which is the path relative to the repository's root to the folder
-            that contains the addons.
+    @property
+    def metadata(self):
+        """Dict of some useful information, include the following keys:
+
+        * ``providers``: a list of specs of known providers.
         """
-        logger = logging.getLogger("provider")
-        name = spec['repo'].strip("/").split("/")[-1]
-        gp = type(name, (cls, ), {
-            'is_concrete_provider': True,
-            'repo': spec['repo'],
-            'addon_path': spec['addon_path'],
-            })
-        logger.debug("create github provider {}".format(name))
-        return gp
+        return {'providers': self.specs}
 
-    @functools.lru_cache()
+    def setup_sources(self, toc_names):
+        """Initialize sources with :attr:`self.specs`.
+
+        .. note::
+
+            The argument `toc_names` is ignored at this moment, i.e., only
+            predefined `Github` sources from :attr:`specs` are available. In
+            the future, it may allow automatic detection of the repository
+            specs for TOCs `toc_names`.
+        """
+        sources = [GithubRepo(self, spec) for spec in self.specs]
+        self.finish_setup_sources(sources)
+
+
+class GithubRepo(AddonSource):
+    """Class that provides access to addons provided through a
+    `Github` repository
+    """
+
+    def __init__(self, provider, spec):
+        """
+        :param spec: dict that contains specification of the
+            addon source. It shall have two keys ``repo`` and
+            ``path``.
+
+        :ivar repo: Name of the `Github` repository.
+        :ivar path: Path relative to the repository's root
+            to the folder that contains addon source files.
+
+        .. note::
+
+            One repository may contain one or more addon folders.
+        """
+        self.spec = spec
+        self.repo = spec['repo']
+        self.path = spec['path']
+        super().__init__(provider)
+        self.logger.debug("repo created: {}".format(self.repo))
+
+    @property
+    def name(self):
+        """Name to identify this addon `Github` repository."""
+        return self.repo.strip("/ ").split("/")[-1]
+
+    @property
     def addons(self):
-        """Return the names of addons provided."""
-        url = _urljoin(
-                self.repo_url_base, self.repo,
-                self.contents_url, self.addon_path)
+        """Return the TOC names of addons provided in this `Github`
+        repository.
+        """
+        try:
+            return list(self.repoinfo.keys())
+        except RuntimeError:
+            return []
+
+    @property
+    @instance_method_lru_cache()
+    def repoinfo(self):
+        """Dict contains information from the repository.
+
+        This property is cached to avoid repeatedly querying the `Github`
+        site.
+        """
+        url = urljoin(
+                self.provider.repo_url_base, self.repo,
+                self.provider.contents_url, self.path)
         r = requests.get(url)
-        if r.status_code == 404 or 'message' in r:
-            self.logger.warning("unable to get addon list at {}".format(url))
-            return {}
-        a = {c['name']: c for c in r.json()}
-        self.logger.debug("addons available at {}:\n{}".format(
-            url, '\n'.join(a.keys())))
-        return a
-
-    def has_addon(self, name):
-        """Return ``True`` if an addon named `name` is provided."""
-        return name in self.addons()
-
-    def spec(self):
-        """Return the spec dict of this addon provider."""
-        return dict(repo=self.repo, addon_path=self.addon_path)
+        if not r.status_code == requests.codes.ok:
+            log_and_raise(
+                    self.logger.warning,
+                    "unable to get addons from {}".format(url),
+                    RuntimeError
+                    )
+        addons = {c['name']: c for c in r.json()}
+        self.logger.debug("addons available from {}:\n{}".format(
+            url, '\n'.join(addons.keys())))
+        return addons
 
 
-class CurseForge(AddonProvider):
+class Curseforge(AddonProvider):
     """
     Class that manages addons provided through `Curseforge`.
     """
     # search_url = 'https://wow.curseforge.com/search/get-results?'
 
-    is_concrete_provider = True
-    """Identify this class as a concrete provider"""
-
     url_base = 'https://www.curseforge.com'
-    """URL of `Curseforge` site"""
+    """URL of `Curseforge` site."""
 
     search_url = 'wow/addons/search?'
-    """URL path to the search form"""
+    """URL path to the search form."""
+
+    name = "curseforge"
+    """Name of this provider."""
 
     def __init__(self):
         """
         If :mod:`PyQt5`, :mod:`BeautifulSoup`, and :mod:`fuzzywuzzy` are
-        available, calling :meth:`has_addon` will test if an addon is provided
-        by `Curseforge` site trough its searching form. Otherwise it always
-        returns ``False``.
+        available, calling :meth:`setup_sources` with the TOC names of a set of
+        addons will create a pool of :obj:`CurseProject` that provide the
+        addons by searching the `Curseforge` site. Otherwise, :attr:`sources`
+        will be an empty list.
 
         .. todo::
 
             Add a database to cache the search results, which can be used
-            as source when the optional packages mentioned above are not
-            available (need to caution about the `Curseforge` ToS, though).
+            as sources when the optional packages mentioned above are not
+            available (need to caution about the `Curseforge` TOS, though).
         """
         super().__init__()
         # methods for querying curseforge site
@@ -154,95 +299,115 @@ class CurseForge(AddonProvider):
                     " this feature, install PyQt5, BeautifulSoup, and"
                     " fuzzywuzzy")
 
-    def has_addon(self, name):
-        """Return ``True`` if an addon named `name` is provided."""
+    @property
+    def metadata(self):
+        """Dict of some useful information."""
+        return {}
 
-        self.logger.debug("search `{}` in CurseForge".format(name))
-        cands = self._search(name)
-        # do fuzzy search if there is no hit
-        if cands is None:
-            _cands = []
-            keys = self._make_fuzzy_search_keys(name)
-            if not keys:
-                return False
-            self.logger.debug("no hit. try fuzzy search keys: {}".format(
-                keys))
-            for key in keys:
-                cand = self._search(key)
-                if cand is not None:
-                    _cands.extend(cand)
-            # remove duplicates
-            seen = set()
-            cands = []
-            for c in _cands:
-                if not c['curse_name'] in seen:
-                    cands.append(c)
-                    seen.add(c['curse_name'])
-            if not cands:
-                self.logger.debug("still no hit. give up")
-                return False
-        # get a fuzzy match to the candidates
-        sorted_cursenames = self.fuzzy_match(
-                name, [c['curse_name'] for c in cands])
-        self.logger.debug("addon candidates for `{}`:\n{}".format(
-            name, '\n'.join([n[0] for n in sorted_cursenames])))
-        # download the zip file one by one and examine the match
+    def setup_sources(self, toc_names):
+        """
+        Populate :attr:`sources` with a list of :obj:`CurseProject` that
+        provide the addons specified with `toc_names` by searching the
+        `Curseforge` site.
+
+        The remote queries require :mod:`PyQt5`, :mod:`BeautifulSoup`, and
+        :mod:`fuzzywuzzy`. If these packages are not available, :attr:`sources`
+        will be an empty list.
+        """
+        sources = []
+        for toc_name in toc_names:
+            self.logger.debug("search TOC `{}` in Curseforge".format(
+                toc_name))
+            try:
+                sources.append(self.find_source(toc_name))
+            except RuntimeError:
+                pass
+        self.finish_setup_sources(sources)
+
+    def find_source(self, toc_name):
+        """Return :obj:`CurseProject` instance that provides addon with TOC
+        name `toc_name`.
+
+        It first tries to search with `toc_name`, if no hit, search with some
+        fuzzy keywords instead. A list of :obj:`CurseProject` will be returned
+        from searching the site. The projects will be ranked according naming
+        similarity and the project file will be downloaded and examined in this
+        order. The first project that provides addon of TOC `toc_name` is
+        returned. If no project found, raise :exc:`RuntimeError`.
+
+        """
+        try:
+            sources = self._search(toc_name)
+        except RuntimeError:
+            sources = OrderedDict()
+            # do fuzzy search if there is no hit
+            ks = self._make_fuzzy_search_keys(toc_name)
+            if not ks:
+                log_and_raise(
+                        self.logger.debug,
+                        "unable to find source for TOC `{}`".format(toc_name),
+                        RuntimeError)
+            self.logger.debug(
+                    "no hit. try fuzzy search with: {}".format(ks))
+            for k in ks:
+                try:
+                    sources.update(self._search(k))
+                except RuntimeError:
+                    pass
+            if not sources:
+                log_and_raise(
+                        self.logger.debug,
+                        "no hit after fuzzy search. give up",
+                        RuntimeError
+                        )
+        # do a fuzzy match between toc_name and the sources
+        source_names = self.fuzzy_match(toc_name, sources.keys())
+        self.logger.debug("project candidates for TOC `{}`:\n{}".format(
+            toc_name, '\n'.join([n[0] for n in source_names])))
+
+        # examine the source projects
         min_score = config.get("curseforge.match.min_score")
         max_try = config.get("curseforge.match.max_try")
-        for i, (curse_name, score) in enumerate(sorted_cursenames):
-            if score < min_score or i > max_try:
+        for i, (name, score) in enumerate(source_names):
+            if score < min_score or i >= max_try:
                 break
-            addons = self.addons(curse_name)
-            if addons is None:
-                continue
-            addons, addonsinfo = addons
-            self.logger.debug("{} contains {}".format(curse_name, addons))
-            if name in addons:
-                return True
-        return False
-
-    @functools.lru_cache()
-    def addons(self, name):
-        """
-        Return a list of addons provided by `name` through `CurseForge`.
-        """
-        self.logger.debug("looking for addon names in {}".format(name))
-        dl_url = '{}/wow/addons/{}/download'.format(self.url_base, name)
-        re_file_url = r'href="(/wow/addons/{}/download/\d+/file)"'.format(
-                name)
-        r = requests.get(dl_url)
-        if r.ok:
-            file_url = re.search(re_file_url, r.text)
-            if file_url is None:
-                self.logger.debug("unable to get file url")
-                return
-            file_url = file_url.group(1)
+            # has_toc is case sensitive
+            if sources[name].has_toc(toc_name):
+                self.logger.debug("found TOC {} in project {}".format(
+                    toc_name, name))
+                return sources[name]
         else:
-            self.logger.debug("unable to get download page")
-            return
-        # query file
-        file_url = _urljoin(self.url_base, file_url)
-        r = requests.get(file_url)
-        if r.ok:
-            zn = r.url.split("/")[-1]
-            ver = os.path.splitext(zn)[0].rsplit('-', 1)[-1]
-            zf = zipfile.ZipFile(io.BytesIO(r.content))
-            zf.filename = zn
-            self.logger.debug("downloaded zip {}, ver={}".format(zn, ver))
-            # get a list of addon names provided
-            tocs = [f for f in zf.namelist() if f.lower().endswith('.toc')]
-            self.logger.debug("tocs in zip: {}".format(tocs))
-            addons = [os.path.split(t)[-2] for t in tocs]
-            self.logger.debug("addons in zip: {}".format(addons))
-            return addons, {'version': ver, 'zipfile': zf}
+            log_and_raise(
+                    self.logger.debug,
+                    "unable to find TOC {} after examine {} projects with "
+                    "matching score greater than {}. The full candidate "
+                    "list:\n{}".format(
+                        toc_name, max_try, min_score, '\n'.join(
+                            source_names)),
+                    RuntimeError
+                    )
 
-    @functools.lru_cache()
     def _search(self, key):
-        """Returns search result from `Curseforge` with search key `key`"""
+        """Wrapper to make the cache work with keys of different
+        capitalization"""
+        return self._search_case_insensitive(key.lower())
+
+    @instance_method_lru_cache()
+    def _search_case_insensitive(self, key):
+        """Returns search result from `Curseforge` with search key `key`.
+
+        This method is cached to avoid repeatedly querying the `Curseforge`
+        site.
+        """
         if self.render_class is None:
-            return None
+            log_and_raise(
+                    self.logger.debug,
+                    "unable to search `Curseforge` because the related"
+                    " optional packages are not installed.",
+                    RuntimeError
+                    )
         render = self.render_class()
-        render.query(_urljoin(self.url_base, self.search_url), params={
+        render.query(urljoin(self.url_base, self.search_url), params={
                     'search': key,
                     # 'providerIdent': 'projects'
                     })
@@ -250,62 +415,74 @@ class CurseForge(AddonProvider):
 
     def _parse_search_result(self, html, **kwargs):
         soup = self.parser_class(html, 'html.parser')
-        logger = self.logger
-        logger.debug("parse search result for `{}`".format(
+        self.logger.debug("parse result from search of `{}`".format(
             kwargs['search_key']))
         tbl = soup.select("ul.listing.listing-project.project-listing")
         if len(tbl) == 0:
-            logger.debug("no table listing found")
-            return None
+            log_and_raise(
+                    self.logger.debug,
+                    "no table listing found",
+                    RuntimeError
+                    )
         if len(tbl) > 1:
-            logger.debug("multiple addon listing found."
-                         " the first one is used.")
+            self.logger.debug("multiple addon listing found."
+                              " the first one is used.")
         tbl = tbl[0]
         rows = tbl.select("li.project-list-item")
         if len(rows) == 0:
-            logger.debug("finish with no results row found")
-            return None
-        # construct addon info dict
-        addons = []
+            log_and_raise(
+                    self.logger.debug,
+                    "no result row is found",
+                    RuntimeError
+                    )
+        # construct `CurseProject` objects for each row
+        sources = OrderedDict()
         for row in rows:
-            addon = kwargs.copy()
-            details = row.select('div.list-item__details')[0]
-            link = details.select('a[href^="/wow/addons/"]')[0]
-            addon['curse_display_name'] = link.select('.list-item__title'
-                                                      )[0].string.strip()
-            addon['curse_url'] = link['href']
-            addon['curse_name'] = addon['curse_url'].split("/")[-1]
-            stats = details.select('p.list-item__stats')[0]
-            s_d = stats.select('span.count--download')[0].string.strip()
-            s_u = stats.select('span.date--updated abbr.standard-datetime'
-                               )[0]['title'].strip()
-            s_c = stats.select('span.date--created abbr.standard-datetime'
-                               )[0]['title'].strip()
-            addon['curse_stats'] = {
-                    'count_download': int(s_d.replace(",", '')),
-                    'date_updated': s_u,
-                    'date_created': s_c,
-                    }
-            desc = details.select('div.list-item__description')[0]
-            addon['curse_description'] = desc.select('p')[0]['title']
-            cats = row.select(
-                    'div.list-item__categories a.category__item')
-            addon['curse_categories'] = [
-                    c['href'].split('/')[-1] for c in cats]
-            dl = row.select(
-                    'div.list-item__actions a.button--download')[0]
-            addon['curse_download_url'] = _urljoin(self.url_base, dl['href'])
-            # addon['curse_download_url_params'] = json.loads(
-            #         dl['data-action-value'])
-            addons.append(addon)
-        return addons
+            info = kwargs.copy()
 
-    def _make_fuzzy_search_keys(self, name):
+            d_d = row.select('div.list-item__details')[0]
+
+            d_l = d_d.select('a[href^="/wow/addons/"]')[0]
+            info['url'] = d_l['href'].strip()
+            info['name'] = info['url'].strip('/').split("/")[-1]
+            info['display_name'] = d_l.select(
+                    '.list-item__title')[0].string.strip()
+
+            d_s = d_d.select('p.list-item__stats')[0]
+            info['stats'] = {
+                    'count_download': int(
+                         d_s.select('span.count--download')[0].string.replace(
+                             ",", "")),
+                    'date_updated': d_s.select(
+                        'span.date--updated abbr.standard-datetime'
+                        )[0]['title'].strip(),
+                    'date_created': d_s.select(
+                        'span.date--created abbr.standard-datetime'
+                        )[0]['title'].strip(),
+                    }
+
+            d_dc = d_d.select('div.list-item__description')[0]
+            info['description'] = d_dc.select('p')[0]['title'].strip()
+
+            d_cs = row.select('div.list-item__categories a.category__item')
+            info['categories'] = [
+                    d_c['href'].strip(' /').split('/')[-1] for d_c in d_cs]
+
+            d_dl = row.select(
+                    'div.list-item__actions a.button--download')[0]
+            info['dlurl'] = d_dl['href'].strip()
+            source = CurseProject(self, info)
+            sources[source.name] = source
+        return sources
+
+    @staticmethod
+    def _make_fuzzy_search_keys(name):
+        # all keys are lower case
+        name = name.lower()
         blacklist = config.get('curseforge.search.blacklist')
         if blacklist is None:
             blacklist = []
         blacklist = list(map(str.lower, blacklist))
-        name = name.lower()
         norm_name = re.sub(r'(\W|_)+', ' ', name).strip()
         stems = norm_name.split()
         if norm_name not in stems:
@@ -315,7 +492,108 @@ class CurseForge(AddonProvider):
         return [s for s in stems if s not in blacklist and s != name]
 
 
-# some internal stuff
-def _urljoin(*args):
-    return posixpath.join(*[a.rstrip("/") if i == 0 else a.strip("/")
-                            for i, a in enumerate(args)])
+class CurseProject(AddonSource):
+    """Class that provides access to addons provided through `Curseforge`.
+    """
+
+    def __init__(self, provider, info):
+        """
+        :param info: Dict of metadata of the project, composed
+            from the searching page.
+
+        .. note::
+
+            One project may contain one or more addon folders.
+        """
+        self.info = info
+        super().__init__(provider)
+
+    @property
+    def name(self):
+        """
+        Name of the `Curseforge` project.
+        """
+        return self.info['name']
+
+    @property
+    def addons(self):
+        """Return the TOCs of addons provided in this `Curseforge` project.
+        """
+        try:
+            return [os.path.split(t)[-2] for t in self.zipinfo['tocs']]
+        except RuntimeError:
+            return []
+
+    @property
+    def dlurl(self):
+        """URL to the `Curseforge` project download page."""
+        return '{}/wow/addons/{}/download'.format(
+                self.provider.url_base, self.name)
+
+    @property
+    @instance_method_lru_cache()
+    def dlinfo(self):
+        """Dict contains information from the project download page.
+
+        This property is cached to avoid querying `Curseforge` site
+        repeatedly.
+        """
+        re_zipurl = r'href="(/wow/addons/{}/download/\d+/file)"'.format(
+                self.name)
+        r = requests.get(self.dlurl)
+        if not r.ok:
+            log_and_raise(
+                    self.logger.warning,
+                    "unable to get {}".format(self.dlurl),
+                    RuntimeError
+                    )
+        s = re.search(re_zipurl, r.text)
+        if s is None:
+            log_and_raise(
+                    self.logger.warning,
+                    "unable to get zip file URL from {}".format(self.dlurl),
+                    RuntimeError
+                    )
+        zipurl = urljoin(self.provider.url_base, s.group(1))
+        return {'zipurl': zipurl}
+
+    @property
+    def zipurl(self):
+        """URL to the `Curseforge` project zip file.
+        """
+        return self.dlinfo['zipurl']
+
+    @property
+    @instance_method_lru_cache()
+    def zipinfo(self):
+        """Dict contains information from the project zip file.
+
+        This property is cached to avoid querying `Curseforge` site
+        repeatedly.
+        """
+        zipurl = self.zipurl  # will raise Runtime Error if unable to connect
+        self.logger.debug("retrieving files for {}".format(self.name))
+        r = requests.get(zipurl)
+        if not r.ok:
+            log_and_raise(
+                    self.logger.warning,
+                    "unable to get {}".format(zipurl),
+                    RuntimeError
+                    )
+        # process the zip file
+        zipname = r.url.split("/")[-1]
+        zipver = os.path.splitext(zipname)[0].rsplit('-', 1)[-1]
+        zipfile = ZipFile(io.BytesIO(r.content))
+        zipsize = len(r.content)
+        tocs = [f for f in zipfile.namelist() if f.lower().endswith('.toc')]
+        self.logger.debug(
+                "downloaded zip {}, ver={}, size={:.2f}MB,"
+                " TOCs:\n{}".format(
+                    zipname, zipver, zipsize / 1e6, '\n'.join(tocs)))
+        return {
+                'name': zipname,
+                'version': zipver,
+                'file': zipfile,
+                'size': zipsize,
+                'tocs': tocs,
+                }

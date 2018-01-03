@@ -10,29 +10,31 @@ import logging
 import sys
 
 from PyQt5.QtCore import QUrl, QUrlQuery
-from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile
+from PyQt5.QtWebEngineWidgets import (
+        QWebEngineProfile, QWebEnginePage)
 from PyQt5.QtWidgets import QApplication
 
 
 __all__ = ['Renderer', ]
 
 
-class Renderer(QWebEngineView):
-    """Class to render a remote site"""
+class Renderer(QWebEnginePage):
+    """Class to render a remote site."""
 
     _UA = ("Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36"
            " (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36")
 
     def __init__(self):
-        self.logger = logging.getLogger("webengine")
+        self.logger = logging.getLogger("qwebpage")
         self.html = None
         global _app
         _app = QApplication.instance()
         if _app is None:
-            self.logger.debug("create qt web engine app")
-            _app = QApplication(sys.argv)
+            self.logger.debug("create qt app for qwebpage")
+            argv = [sys.argv[0], ]
+            _app = QApplication(argv)
         QWebEngineProfile.defaultProfile().setHttpUserAgent(self._UA)
-        QWebEngineView.__init__(self)
+        QWebEnginePage.__init__(self)
         self.loadFinished.connect(self._loadFinished)
 
     def query(self, url, params):
@@ -52,7 +54,7 @@ class Renderer(QWebEngineView):
     def _loadFinished(self, result):
         # This is an async call, you need to wait for this
         # to be called before closing the app
-        self.page().toHtml(self._callable)
+        self.toHtml(self._callable)
 
     def _callable(self, data):
         self.html = data
@@ -61,3 +63,7 @@ class Renderer(QWebEngineView):
         # Data has been stored, it's safe to quit the app
         global _app
         _app.quit()
+
+    def javaScriptConsoleMessage(self, lvl, msg, line, src):
+        """Re-implement to avoid print warnings from the chromium engine."""
+        pass

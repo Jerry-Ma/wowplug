@@ -3,10 +3,6 @@
 # Create Date    :  2017-12-27 13:18
 # Git Repo       :  https://github.com/Jerry-Ma
 # Email Address  :  jerry.ma.nk@gmail.com
-"""
-scan.py
-"""
-
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 import os
@@ -14,9 +10,8 @@ import re
 import glob
 import logging
 from collections import OrderedDict
-from .omap_yaml import yaml
-from .provider import GithubProvider, AddonProvider
-from .config import config
+from .utils import yaml
+from .provider import AddonProvider
 
 
 def scan(scandir, output_file=None):
@@ -31,7 +26,7 @@ def scan(scandir, output_file=None):
         addondir = os.path.join(scandir, 'Interface', 'AddOns')
     else:
         addondir = scandir
-    logger.debug("addon dir {}".format(addondir))
+    logger.debug("scan dir {}".format(addondir))
 
     addons = []
     for toc in glob.glob(os.path.join(addondir, "*/*.toc")):
@@ -47,36 +42,45 @@ def scan(scandir, output_file=None):
             addon['toc'].get('Interface', 'N/A'),
             addon['toc'].get('Version', 'N/A'),
             addon['toc_name']))
-    logger.info("addons in {}:\n".format(addondir) + "\n".join(summary))
+    logger.info("addons found in {}:\n".format(addondir) + "\n".join(summary))
     # handle output
     if output_file is None:
         return
-    # populate providers from config
-    specs = config.get("github_providers")
-    if specs is not None:
-        for spec in specs:
-            GithubProvider.create(spec)
-    logger.debug("available providers: {}".format(AddonProvider.providers()))
-    # dump some config entry to output as well
-    output = OrderedDict()
+    output = OrderedDict()  # hold the output
+    collected = set()  # used to keep track of uncollected addons
+    logger.debug("available providers: {}".format(
+        list(AddonProvider.providers.keys())))
     # go through the providers and collect the addons
-    collected = set()
-    for provider in AddonProvider.providers():
-        pdict = []
-        for addon in addons:
-            name = addon['toc_name']
-            if provider.has_addon(name):
-                pdict.append(name)
-                collected.add(name)
+    tocs = [a['toc_name'] for a in addons]
+    for provider in AddonProvider.providers.values():
+        provider.setup_sources(tocs)
+        logger.debug("collect addons to {}".format(provider.name))
+        pdict = OrderedDict()
+        for source in provider.sources.values():
+            alist = []
+            for addon in addons:
+                name = addon['toc_name']
+                if source.has_toc(name):
+                    alist.append(name)
+                    collected.add(name)
+            if not alist:
+                continue
+            # format alist to one line string
+            pdict[source.name] = alist
+            # append some metadata
+            for metakey, metaval in provider.metadata.items():
+                pdict[metakey] = metaval
         output[provider.name] = pdict
-    # add the rest to skipped group
-    output['skipped'] = [
-            a['toc_name'] for a in addons
-            if a['toc_name'] not in collected]
+
+    # add the rest under skipped key
+    output['skipped'] = []
+    for addon in addons:
+        name = addon['toc_name']
+        if name not in collected:
+            output['skipped'].append(name)
     # append some config data
-    output['scan'] = {
-            'dir': scandir}
-    output['github_providers'] = specs
+    output['config'] = {'scan': {'dir': scandir}}
+    # dump to output_file
     y = yaml.safe_dump(output, default_flow_style=False)
     with open(output_file, 'w') as fo:
         fo.write(y)
