@@ -42,7 +42,7 @@ extras_require = {
         ]}
 setup(
     setup_requires=["setuptools-git", 'setuptools-git-version'],
-    version_format='0.0.dev{commitcount}+{gitsha}',
+    version_format='{tag}.dev{commitcount}+{gitsha}',
     name=metadata['package_name'],
     description=metadata['description'],
     long_description=long_description,
