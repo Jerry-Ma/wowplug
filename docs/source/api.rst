@@ -14,4 +14,5 @@
     :no-inheritance-diagram:
 
 .. automodapi:: wowplug.utils
+    :include-all-objects:
     :no-inheritance-diagram:

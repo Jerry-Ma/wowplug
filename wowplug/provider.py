@@ -38,6 +38,10 @@ class AddonProvider(abc.ABC):
     providers = OrderedDict()
     """List of available :obj:`AddonProvider` instances."""
 
+    session = requests.Session()
+    """:obj:`requests.Session` object to be used for the sources to query
+    remote websites."""
+
     @abc.abstractproperty
     def name(self):
         """Convenience attribute to the name of the class. It is used
@@ -215,7 +219,8 @@ class GithubRepo(AddonSource):
     @property
     def name(self):
         """Name to identify this addon `Github` repository."""
-        return self.repo.strip("/ ").split("/")[-1]
+        # return self.repo.strip("/ ").split("/")[-1]
+        return urljoin(self.repo, self.path)
 
     @property
     def addons(self):
@@ -238,7 +243,7 @@ class GithubRepo(AddonSource):
         url = urljoin(
                 self.provider.repo_url_base, self.repo,
                 self.provider.contents_url, self.path)
-        r = requests.get(url)
+        r = self.provider.session.get(url)
         if not r.status_code == requests.codes.ok:
             log_and_raise(
                     self.logger.warning,
@@ -540,7 +545,7 @@ class CurseProject(AddonSource):
         """
         re_zipurl = r'href="(/wow/addons/{}/download/\d+/file)"'.format(
                 self.name)
-        r = requests.get(self.dlurl)
+        r = self.provider.session.get(self.dlurl)
         if not r.ok:
             log_and_raise(
                     self.logger.warning,
@@ -573,7 +578,7 @@ class CurseProject(AddonSource):
         """
         zipurl = self.zipurl  # will raise Runtime Error if unable to connect
         self.logger.debug("retrieving files for {}".format(self.name))
-        r = requests.get(zipurl)
+        r = self.provider.session.get(zipurl)
         if not r.ok:
             log_and_raise(
                     self.logger.warning,

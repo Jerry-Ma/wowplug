@@ -68,8 +68,8 @@ def scan(scandir, output_file=None):
             # format alist to one line string
             pdict[source.name] = alist
             # append some metadata
-            for metakey, metaval in provider.metadata.items():
-                pdict[metakey] = metaval
+            # for metakey, metaval in provider.metadata.items():
+            #     pdict[metakey] = metaval
         output[provider.name] = pdict
 
     # add the rest under skipped key
