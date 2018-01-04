@@ -16,6 +16,9 @@ from collections import OrderedDict
 from inspect import isabstract
 
 import requests
+from bs4 import BeautifulSoup
+import fuzzywuzzy.process
+
 from .config import config
 from .utils import instance_method_lru_cache, log_and_raise, urljoin
 
@@ -260,8 +263,6 @@ class Curseforge(AddonProvider):
     """
     Class that manages addons provided through `Curseforge`.
     """
-    # search_url = 'https://wow.curseforge.com/search/get-results?'
-
     url_base = 'https://www.curseforge.com'
     """URL of `Curseforge` site."""
 
@@ -272,37 +273,7 @@ class Curseforge(AddonProvider):
     """Name of this provider."""
 
     def __init__(self):
-        """
-        If :mod:`PyQt5`, :mod:`BeautifulSoup`, and :mod:`fuzzywuzzy` are
-        available, calling :meth:`setup_sources` with the TOC names of a set of
-        addons will create a pool of :obj:`CurseProject` that provide the
-        addons by searching the `Curseforge` site. Otherwise, :attr:`sources`
-        will be an empty list.
-
-        .. todo::
-
-            Add a database to cache the search results, which can be used
-            as sources when the optional packages mentioned above are not
-            available (need to caution about the `Curseforge` TOS, though).
-        """
         super().__init__()
-        # methods for querying curseforge site
-        self.render_class = None
-        self.parser_class = None
-        self.fuzzy_match = None
-        try:
-            from . import qt_web
-            from bs4 import BeautifulSoup
-            from fuzzywuzzy import process
-            self.render_class = qt_web.Renderer
-            self.parser_class = BeautifulSoup
-            self.fuzzy_match = process.extract
-        except ImportError:
-            self.logger.warning(
-                    "unable to initialize web renderer modules. "
-                    "Curseforge searching will be unavailable. To enable"
-                    " this feature, install PyQt5, BeautifulSoup, and"
-                    " fuzzywuzzy")
 
     @property
     def metadata(self):
@@ -314,10 +285,6 @@ class Curseforge(AddonProvider):
         Populate :attr:`sources` with a list of :obj:`CurseProject` that
         provide the addons specified with `toc_names` by searching the
         `Curseforge` site.
-
-        The remote queries require :mod:`PyQt5`, :mod:`BeautifulSoup`, and
-        :mod:`fuzzywuzzy`. If these packages are not available, :attr:`sources`
-        will be an empty list.
         """
         sources = []
         for toc_name in toc_names:
@@ -339,7 +306,6 @@ class Curseforge(AddonProvider):
         similarity and the project file will be downloaded and examined in this
         order. The first project that provides addon of TOC `toc_name` is
         returned. If no project found, raise :exc:`RuntimeError`.
-
         """
         try:
             sources = self._search(toc_name)
@@ -366,7 +332,7 @@ class Curseforge(AddonProvider):
                         RuntimeError
                         )
         # do a fuzzy match between toc_name and the sources
-        source_names = self.fuzzy_match(toc_name, sources.keys())
+        source_names = fuzzywuzzy.process.extract(toc_name, sources.keys())
         self.logger.debug("project candidates for TOC `{}`:\n{}".format(
             toc_name, '\n'.join([n[0] for n in source_names])))
 
@@ -393,7 +359,7 @@ class Curseforge(AddonProvider):
                     )
 
     def _search(self, key):
-        """Wrapper to make the cache work with keys of different
+        """Wrapper to make the lru cache work with params of different
         capitalization"""
         return self._search_case_insensitive(key.lower())
 
@@ -404,22 +370,21 @@ class Curseforge(AddonProvider):
         This method is cached to avoid repeatedly querying the `Curseforge`
         site.
         """
-        if self.render_class is None:
-            log_and_raise(
-                    self.logger.debug,
-                    "unable to search `Curseforge` because the related"
-                    " optional packages are not installed.",
-                    RuntimeError
-                    )
-        render = self.render_class()
-        render.query(urljoin(self.url_base, self.search_url), params={
+        r = self.session.get(urljoin(
+            self.url_base, self.search_url), params={
                     'search': key,
                     # 'providerIdent': 'projects'
                     })
-        return self._parse_search_result(render.html, search_key=key)
+        if not r.status_code == requests.codes.ok:
+            log_and_raise(
+                    self.logger.debug,
+                    "unable to get search results of {}".format(key),
+                    RuntimeError
+                    )
+        return self._parse_search_result(r.text, search_key=key)
 
     def _parse_search_result(self, html, **kwargs):
-        soup = self.parser_class(html, 'html.parser')
+        soup = BeautifulSoup(html, 'html.parser')
         self.logger.debug("parse result from search of `{}`".format(
             kwargs['search_key']))
         tbl = soup.select("ul.listing.listing-project.project-listing")
