@@ -38,7 +38,8 @@ extras_require = {
             'nose',
             'coverage',
             'pypi-publisher',
-            'sphinx-automodapi'
+            'sphinx-automodapi',
+            'sphinxcontrib-fulltoc',
         ]}
 setup(
     setup_requires=["setuptools-git", 'setuptools-git-version'],

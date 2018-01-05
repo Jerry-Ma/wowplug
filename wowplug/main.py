@@ -17,7 +17,7 @@ from textwrap import indent
 import pkg_resources
 from docopt import docopt
 from schema import Schema, Or, SchemaError
-from .utils import norm_path
+from .utils import expanded_abspath
 
 
 __all__ = ['cli', ]
@@ -82,7 +82,7 @@ Options:
                     # always update config entry
                     '<dir>': {
                         'key': 'scan.dir',
-                        'norm': norm_path,
+                        'norm': expanded_abspath,
                         'from': lambda a, c: a is None,
                         'to': lambda a, c: True,
                         },
@@ -90,7 +90,7 @@ Options:
                     # update to config entry if specified
                     '--output': {
                         'key': 'sync.file',
-                        'norm': norm_path,
+                        'norm': expanded_abspath,
                         'from': lambda a, c: False,
                         'to': lambda a, c: a is not None,
                         },
@@ -139,7 +139,7 @@ Options:
                     # always update to config entry
                     '<file>': {
                         'key': 'sync.file',
-                        'norm': norm_path,
+                        'norm': expanded_abspath,
                         'from': lambda a, c: a is None,
                         'to': lambda a, c: True,
                         },
@@ -147,7 +147,7 @@ Options:
                     # update to config entry if specified
                     '--output': {
                         'key': 'scan.dir',
-                        'norm': norm_path,
+                        'norm': expanded_abspath,
                         'from': lambda a, c: a is None,
                         'to': lambda a, c: a is not None,
                         },

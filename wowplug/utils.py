@@ -15,7 +15,7 @@ from collections import OrderedDict
 
 __all__ = [
         'instance_method_lru_cache', 'log_and_raise',
-        'urljoin', 'norm_path', 'yaml']
+        'urljoin', 'expanded_abspath', 'yaml']
 
 
 instance_method_lru_cache = lru_cache
@@ -39,7 +39,7 @@ def urljoin(*args):
                             for i, a in enumerate(args)])
 
 
-def norm_path(p):
+def expanded_abspath(p):
     """Return absolute path with user ``~`` expanded for path `p`."""
     return os.path.abspath(os.path.expanduser(p))
 

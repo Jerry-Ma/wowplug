@@ -1,3 +1,7 @@
+=============
+Reference/API
+=============
+
 .. automodapi:: wowplug.config
     :no-inheritance-diagram:
     :include-all-objects:
@@ -7,12 +11,9 @@
 
 .. automodapi:: wowplug.provider
 
-.. automodapi:: wowplug.qt_web
-    :no-inheritance-diagram:
-
 .. automodapi:: wowplug.scan
     :no-inheritance-diagram:
 
 .. automodapi:: wowplug.utils
-    :include-all-objects:
     :no-inheritance-diagram:
+    :skip: instance_method_lru_cache

@@ -1,9 +1,12 @@
+:tocdepth: 2
+
+=========================================
 Welcome to wowplug's documentation!
 =========================================
 
 .. toctree::
-    :caption: Reference/API
 
+    usage
     api
 
 
