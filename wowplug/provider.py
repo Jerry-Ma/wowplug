@@ -11,16 +11,22 @@ import io
 from zipfile import ZipFile
 import re
 import os
+import glob
 import abc
 from collections import OrderedDict
 from inspect import isabstract
+import concurrent.futures
+import shutil
 
 import requests
 from bs4 import BeautifulSoup
 import fuzzywuzzy.process
 
 from .config import config
-from .utils import instance_method_lru_cache, log_and_raise, urljoin
+from .utils import (
+        instance_method_lru_cache, log_and_raise, urljoin,
+        unzipdir, linkdir,
+        run_and_log, )
 
 
 __all__ = [
@@ -44,6 +50,11 @@ class AddonProvider(abc.ABC):
     session = requests.Session()
     """:obj:`requests.Session` object to be used for the sources to query
     remote websites."""
+
+    @property
+    def source_class(self):
+        """Class of the sources this provider provides."""
+        return AddonSource
 
     @abc.abstractproperty
     def name(self):
@@ -76,13 +87,13 @@ class AddonProvider(abc.ABC):
         """Create and setup a list of :obj:`AddonSource` instances
         that *may* provide the addons with TOCs `toc_names`.
 
-        This method shall be implemented by subclasses and decorated
-        with :meth:`finish_setup_sources` to make the sources
+        This method shall be implemented by subclasses and ended with
+        a call to :meth:`_finish_setup_sources` to make the sources
         available in :attr:`sources`.
         """
         return NotImplemented
 
-    def finish_setup_sources(self, sources):
+    def _finish_setup_sources(self, sources):
         """Make `sources` available to :meth:`sources` method.
 
         Subclass should call this method at the end of its implementation of
@@ -107,15 +118,15 @@ class AddonProvider(abc.ABC):
 
             The returned list is only populated after the call of
             :meth:`setup_sources`, which should be decorated with
-            :meth:`finish_setup_sources`.
+            :meth:`_finish_setup_sources`.
         """
         return self._sources
 
-    def has_toc(self, toc_name):
+    def hastoc(self, toc_name):
         """Return ``True`` if the sources of this provider provide addon
         of TOC `toc_name`."""
 
-        return any(s.has_toc(toc_name) for s in self.sources)
+        return any(s.hastoc(toc_name) for s in self.sources)
 
 
 class AddonSource(abc.ABC):
@@ -135,12 +146,86 @@ class AddonSource(abc.ABC):
     def __init__(self, provider):
         """
         :param provider: provider this addon source belongs to.
+
+        :ivar sync_status: Usually is ``None``, will be set
+            to something meaningful after call of :meth:`sync`.
         """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.provider = provider
+        self._reset_sync_status()
         self.logger.debug("create addon source {}".format(self.name))
 
-    def has_toc(self, toc_name):
+    @abc.abstractmethod
+    def sync(self, target):
+        """Sync the source of this addon to directory `target`."""
+        return NotImplemented
+
+    def _reset_sync_status(self):
+        self.sync_status = {
+                'message': None,
+                'dirs': [],
+            }
+
+    def _set_sync_status(self, message, dirs):
+        self.sync_status = {
+                'message': message,
+                'dirs': dirs}
+
+    def synczip(self, target, pattern='*'):
+        """Sync ZIP source of this addon to directory `target`.
+
+        May be called within the implementation of :meth:`sync`.
+        """
+        if not hasattr(self, 'zipurl'):
+            raise NotImplementedError(
+                    '`zipurl` has to be implemented to run `synczip`')
+        self.logger.debug("zip url: {}".format(self.zipurl))
+        zipinfo = self.zipinfo
+        zipfile = config.save_to_cachedir(
+                zipinfo['name'], zipinfo['content'])
+        return unzipdir(zipfile, target, pattern=pattern)
+
+    @property
+    @instance_method_lru_cache()
+    def zipinfo(self):
+        """Dict contains information from the source zip file. To use
+        it, :attr:`zipurl` has to be implemented.
+
+        This property is cached to avoid querying remote site
+        repeatedly.
+        """
+        if not hasattr(self, 'zipurl'):
+            raise NotImplementedError(
+                    '`zipurl` has to be implemented to get zipinfo')
+        self.logger.debug("retrieving files for {}".format(self.name))
+        r = self.provider.session.get(self.zipurl)
+        if not r.ok:
+            log_and_raise(
+                    self.logger.warning,
+                    "unable to get {}".format(self.zipurl),
+                    RuntimeError
+                    )
+        # process the zip file
+        zipname = r.url.split("/")[-1]
+        zipver = os.path.splitext(zipname)[0].rsplit('-', 1)[-1]
+        zipsize = len(r.content)
+        zipcontent = r.content
+        zipfile = ZipFile(io.BytesIO(zipcontent))
+        tocs = [f for f in zipfile.namelist() if f.lower().endswith('.toc')]
+        zipfile.close()
+        self.logger.debug(
+                "downloaded zip {}, ver={}, size={:.2f}MB,"
+                " TOCs:\n{}".format(
+                    zipname, zipver, zipsize / 1e6, '\n'.join(tocs)))
+        return {
+                'name': zipname,
+                'version': zipver,
+                'content': zipcontent,
+                'size': zipsize,
+                'tocs': tocs,
+                }
+
+    def hastoc(self, toc_name):
         """
         Return ``True`` if the addon source provides addon with TOC of
         `toc_name`.
@@ -165,12 +250,20 @@ class Github(AddonProvider):
     contents_url = "contents"
     """URL path to the contents of a `Github` repository."""
 
+    zipball_url = "zipball/master"
+    """URL path to the zipball of a `Github` repository."""
+
     name = "github"
     """Name of this provider."""
 
     def __init__(self):
         super().__init__()
         self.specs = config.get("github.providers")
+
+    @property
+    def source_class(self):
+        """Class of the sources this provider provides."""
+        return GithubRepo
 
     @property
     def metadata(self):
@@ -190,8 +283,8 @@ class Github(AddonProvider):
             the future, it may allow automatic detection of the repository
             specs for TOCs `toc_names`.
         """
-        sources = [GithubRepo(self, spec) for spec in self.specs]
-        self.finish_setup_sources(sources)
+        sources = [self.source_class(self, spec) for spec in self.specs]
+        self._finish_setup_sources(sources)
 
 
 class GithubRepo(AddonSource):
@@ -199,31 +292,46 @@ class GithubRepo(AddonSource):
     `Github` repository
     """
 
-    def __init__(self, provider, spec):
+    def __init__(self, provider, spec, info=None):
         """
-        :param spec: dict that contains specification of the
-            addon source. It shall have two keys ``repo`` and
-            ``path``.
+        :param spec: ``{author}/{repo_name}/{path}``, unique identifier
+            to the provided addons.
+        :param info: Dict of any metadata to be kept along with.
 
-        :ivar repo: Name of the `Github` repository.
+        :ivar author: Author's name.
+        :ivar repo_name: Name of the repository.
+        :ivar repo: ``{author}/{repo_name}``, unique identifier
+            of the `Github` repository.
         :ivar path: Path relative to the repository's root
             to the folder that contains addon source files.
+        :ivar gitcmd: Path to the `git` command executable.
 
         .. note::
 
             One repository may contain one or more addon folders.
         """
-        self.spec = spec
-        self.repo = spec['repo']
-        self.path = spec['path']
+        self.info = {} if info is None else info
+        self.spec = re.sub(r'/+', '/', spec.strip("/"))
+        m = re.match(
+            r'(?P<author>[^ /]+)/(?P<repo_name>[^ /]+)(?:/(?P<path>[^ ]+))?',
+            self.spec)
+        if m is None:
+            raise RuntimeError("invalid GithubRepo source spec {}".format(
+                self.spec))
+        m = m.groupdict()
+        self.author = m['author']
+        self.repo_name = m['repo_name']
+        self.path = '' if m['path'] is None else m['path']
+        self.repo = "{}/{}".format(self.author, self.repo_name)
+        self.gitcmd = shutil.which('git')
         super().__init__(provider)
-        self.logger.debug("repo created: {}".format(self.repo))
+        self.logger.debug("source {} initialized".format(self.name))
 
     @property
     def name(self):
         """Name to identify this addon `Github` repository."""
         # return self.repo.strip("/ ").split("/")[-1]
-        return urljoin(self.repo, self.path)
+        return self.spec
 
     @property
     def addons(self):
@@ -258,6 +366,64 @@ class GithubRepo(AddonSource):
             url, '\n'.join(addons.keys())))
         return addons
 
+    @property
+    def zipurl(self):
+        """URL to the `Github` repo zipball file.
+        """
+        return urljoin(
+                self.provider.repo_url_base, self.repo,
+                self.provider.zipball_url)
+
+    @property
+    def zipinfo(self):
+        """Reimplement :attr:`AddonSource.zipinfo` to get a meaning
+        full zip name instead of `master.zip`."""
+        return dict(super().zipinfo, name='{}-{}.zip'.format(
+            self.author, self.repo_name))
+
+    def sync(self, target):
+        """Sync the remote addons to target directory ``target``."""
+        self._reset_sync_status()
+        self.logger.debug("start sync to {}".format(target))
+        if self.gitcmd is None:
+            # get zip ball
+            self.logger.debug("no git installation found. get zip file")
+            pattern = os.path.join(
+                    "{}-{}-*".format(self.author, self.repo_name),
+                    self.path,
+                    "*/*.[tT][oO][cC]")
+            tgtdirs = self.synczip(target, pattern)
+        else:
+            clonedir = os.path.join(config.cachedir, self.repo_name)
+            if os.path.exists(clonedir):
+                if os.listdir(clonedir) and \
+                        glob.glob(os.path.join(clonedir, '.git')):
+                    self.logger.debug("update exist repo {}".format(clonedir))
+                    retcode = run_and_log(
+                            [self.gitcmd, '-C', clonedir, 'pull'],
+                            self.logger.debug
+                            )
+                else:
+                    raise RuntimeError(
+                        "{} exist but seems not to be a "
+                        "valid local git repository".format(clonedir))
+            else:
+                self.logger.debug("clone repo to {}".format(clonedir))
+                retcode = run_and_log([
+                    self.gitcmd, 'clone', 'git@github.com:{}.git'.format(
+                        self.repo),
+                    clonedir
+                    ],
+                    self.logger.debug,
+                    )
+            if retcode != 0:
+                raise RuntimeError("error to clone or update {}".format(
+                    self.repo))
+            pattern = os.path.join(self.path, "*/*.[tT][oO][cC]")
+            tgtdirs = linkdir(clonedir, target, pattern=pattern)
+        self._set_sync_status(
+                "success", [os.path.basename(d) for d in tgtdirs])
+
 
 class Curseforge(AddonProvider):
     """
@@ -276,6 +442,11 @@ class Curseforge(AddonProvider):
         super().__init__()
 
     @property
+    def source_class(self):
+        """Class of the sources this provider provides."""
+        return CurseProject
+
+    @property
     def metadata(self):
         """Dict of some useful information."""
         return {}
@@ -286,15 +457,21 @@ class Curseforge(AddonProvider):
         provide the addons specified with `toc_names` by searching the
         `Curseforge` site.
         """
-        sources = []
-        for toc_name in toc_names:
-            self.logger.debug("search TOC `{}` in Curseforge".format(
-                toc_name))
+
+        def _func(toc_name):
             try:
-                sources.append(self.find_source(toc_name))
+                return self.find_source(toc_name)
             except RuntimeError:
-                pass
-        self.finish_setup_sources(sources)
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=8, thread_name_prefix="loader") as executor:
+            fs = list(map(
+                lambda t: executor.submit(_func, t), toc_names))
+            rs = [
+                    f.result() for f in concurrent.futures.as_completed(fs)
+                    ]
+        self._finish_setup_sources([s for s in rs if s is not None])
 
     def find_source(self, toc_name):
         """Return :obj:`CurseProject` instance that provides addon with TOC
@@ -307,6 +484,8 @@ class Curseforge(AddonProvider):
         order. The first project that provides addon of TOC `toc_name` is
         returned. If no project found, raise :exc:`RuntimeError`.
         """
+        self.logger.debug("search TOC `{}` in Curseforge".format(
+                toc_name))
         try:
             sources = self._search(toc_name)
         except RuntimeError:
@@ -342,8 +521,8 @@ class Curseforge(AddonProvider):
         for i, (name, score) in enumerate(source_names):
             if score < min_score or i >= max_try:
                 break
-            # has_toc is case sensitive
-            if sources[name].has_toc(toc_name):
+            # hastoc is case sensitive
+            if sources[name].hastoc(toc_name):
                 self.logger.debug("found TOC {} in project {}".format(
                     toc_name, name))
                 return sources[name]
@@ -441,7 +620,7 @@ class Curseforge(AddonProvider):
             d_dl = row.select(
                     'div.list-item__actions a.button--download')[0]
             info['dlurl'] = d_dl['href'].strip()
-            source = CurseProject(self, info)
+            source = self.source_class(self, info['name'], info)
             sources[source.name] = source
         return sources
 
@@ -466,8 +645,9 @@ class CurseProject(AddonSource):
     """Class that provides access to addons provided through `Curseforge`.
     """
 
-    def __init__(self, provider, info):
+    def __init__(self, provider, name, info=None):
         """
+        :param name: Name of the `Curseforge` project.
         :param info: Dict of metadata of the project, composed
             from the searching page.
 
@@ -475,15 +655,18 @@ class CurseProject(AddonSource):
 
             One project may contain one or more addon folders.
         """
-        self.info = info
+
+        self.info = {} if info is None else info
+        self._name = name
         super().__init__(provider)
+        self.logger.debug("source {} initialized".format(self.name))
 
     @property
     def name(self):
         """
         Name of the `Curseforge` project.
         """
-        return self.info['name']
+        return self._name
 
     @property
     def addons(self):
@@ -533,37 +716,11 @@ class CurseProject(AddonSource):
         """
         return self.dlinfo['zipurl']
 
-    @property
-    @instance_method_lru_cache()
-    def zipinfo(self):
-        """Dict contains information from the project zip file.
-
-        This property is cached to avoid querying `Curseforge` site
-        repeatedly.
-        """
-        zipurl = self.zipurl  # will raise Runtime Error if unable to connect
-        self.logger.debug("retrieving files for {}".format(self.name))
-        r = self.provider.session.get(zipurl)
-        if not r.ok:
-            log_and_raise(
-                    self.logger.warning,
-                    "unable to get {}".format(zipurl),
-                    RuntimeError
-                    )
-        # process the zip file
-        zipname = r.url.split("/")[-1]
-        zipver = os.path.splitext(zipname)[0].rsplit('-', 1)[-1]
-        zipfile = ZipFile(io.BytesIO(r.content))
-        zipsize = len(r.content)
-        tocs = [f for f in zipfile.namelist() if f.lower().endswith('.toc')]
-        self.logger.debug(
-                "downloaded zip {}, ver={}, size={:.2f}MB,"
-                " TOCs:\n{}".format(
-                    zipname, zipver, zipsize / 1e6, '\n'.join(tocs)))
-        return {
-                'name': zipname,
-                'version': zipver,
-                'file': zipfile,
-                'size': zipsize,
-                'tocs': tocs,
-                }
+    def sync(self, target):
+        """Sync the remote addons to target directory ``target``."""
+        self._reset_sync_status()
+        self.logger.debug("sync {} to {}".format(self.name, target))
+        pattern = "*/*.[tT][oO][cC]"
+        tgtdirs = self.synczip(target, pattern)
+        self._set_sync_status(
+                "success", [os.path.basename(d) for d in tgtdirs])

@@ -9,13 +9,24 @@ from __future__ import (absolute_import, division, print_function,
 from functools import lru_cache
 import posixpath
 import os
+import glob
+import errno
+import zipfile
+from io import BytesIO
+import logging
+from tempfile import TemporaryDirectory
 import yaml
 from collections import OrderedDict
+from tabulate import tabulate
+import dirsync
+import shutil
+from subprocess import Popen, PIPE
 
 
 __all__ = [
         'instance_method_lru_cache', 'log_and_raise',
-        'urljoin', 'expanded_abspath', 'yaml']
+        'mkdirs', 'unzipdir', 'zipdir', 'linkdir',
+        'urljoin', 'expanded_abspath', 'tabulate_listofdicts', 'yaml']
 
 
 instance_method_lru_cache = lru_cache
@@ -33,6 +44,16 @@ def log_and_raise(logger_func, msg, exc):
     raise exc(msg)
 
 
+def run_and_log(cmd, logger_func):
+    process = Popen(cmd, stdout=PIPE)
+    cmdstr = ' '.join(['"{}"'.format(c) if ' ' in c else c for c in cmd])
+    with process.stdout:
+        for ln in iter(process.stdout.readline, b''):
+            logger_func('{}\n    {}"'.format(
+                cmdstr, ln.decode('utf-8').strip('\n')))
+    return process.wait()  # 0 means success
+
+
 def urljoin(*args):
     """Join URL segments and *ignore* the leading slash ``/``."""
     return posixpath.join(*[a.rstrip("/") if i == 0 else a.strip("/")
@@ -42,6 +63,143 @@ def urljoin(*args):
 def expanded_abspath(p):
     """Return absolute path with user ``~`` expanded for path `p`."""
     return os.path.abspath(os.path.expanduser(p))
+
+
+def tabulate_listofdicts(lod, keymap=None, fill=None, **kwargs):
+    """Return a table summarizes a list of dicts."""
+    if keymap is None:
+        return tabulate(lod, **kwargs)
+    else:
+        # create a list of list from key map
+        try:
+            hs, fs = zip(*keymap)
+        except TypeError:
+            hs, fs = zip(*keymap.items())
+        lol = [[f(d) if callable(f) else d.get(f, fill)
+                for f in fs] for d in lod]
+        kwargs.pop('headers', None)
+        return tabulate(lol, headers=hs, **kwargs)
+
+
+def mkdirs(d):
+    """Create directory named `d`"""
+    try:
+        os.makedirs(d)
+    except OSError as exc:  # Guard against race condition
+        if exc.errno != errno.EEXIST:
+            raise
+    return d
+
+
+def zipdir(src, save=None):
+    """Create a ZIP archive for a directory `src` and its contents.
+
+    :param save: If not ``None``, the created zip file will be saved
+        to the filename. Otherwise a :class:`BytesIO` object is
+        returned with its seek position at the start.
+    """
+    _save = save
+    if save is None:
+        save = BytesIO()
+    zf = zipfile.ZipFile(save, 'w', zipfile.ZIP_DEFLATED)
+    abssrc = os.path.abspath(src)
+    for dirname, subdirs, files in os.walk(src, followlinks=True):
+        for filename in files:
+            absname = os.path.abspath(os.path.join(dirname, filename))
+            arcname = absname.split(abssrc)[-1]
+            zf.write(absname, arcname)
+    zf.close()
+    if _save is None:
+        save.seek(0)
+        return save
+    else:
+        return None
+
+
+def unzipdir(source, target, pattern='*'):
+    """Unpack a ZIP archive `source` to the target diretory `target`.
+
+    :param pattern: glob pattern to specify the files to be unzipped.
+        If it points to a file, the parent directory is used. If it
+        points to a directory, the directory is used.
+    """
+    logger = logging.getLogger("unzip")
+    logger.info("{} to {} for {}".format(source, target, pattern))
+    with open(source, 'rb') as fo:
+        zf = zipfile.ZipFile(fo)
+        # create a tempdirectory
+        with TemporaryDirectory() as tmpdir:
+            zf.extractall(tmpdir)
+            # find the root path for the sync
+            srcpaths = glob.glob(os.path.join(tmpdir, pattern))
+            srcdirs = [p if os.path.isdir(p) else os.path.dirname(p)
+                       for p in srcpaths]
+            # get target dir and make sure those are directories not links
+            tgtdirs = [os.path.join(target, os.path.basename(s))
+                       for s in srcdirs]
+            if any(os.path.islink(t) for t in tgtdirs):
+                raise RuntimeError(
+                    "cannot unzip because target is a symlink. the"
+                    " target may be a linked github repository. please"
+                    " check the source list.")
+            for srcdir, tgtdir in zip(srcdirs, tgtdirs):
+                logger.debug("unzip from {} to {}".format(srcdir, tgtdir))
+                # sync the directory to target
+                dirsync.sync(
+                        srcdir, tgtdir, "update",
+                        create=True,
+                        verbose=False,
+                        logger=logging.getLogger("dirsync"))
+                dirsync.sync(
+                        srcdir, tgtdir, "sync",
+                        purge=False,
+                        verbose=False,
+                        logger=logging.getLogger("dirsync"))
+            return tgtdirs
+
+
+def linkdir(source, target, pattern='*'):
+    """Link directory `source` to diretory `target`.
+
+    :param pattern: glob pattern to specify the files to be linked.
+        If it points to a file, the parent directory is used. If it
+        points to a directory, the directory is used.
+    """
+    logger = logging.getLogger("link")
+    logger.info("{} to {} for {}".format(source, target, pattern))
+    # find the root path for the sync
+    srcpaths = glob.glob(os.path.join(source, pattern))
+    srcdirs = [p if os.path.isdir(p) else os.path.dirname(p)
+               for p in srcpaths]
+    tgtdirs = [os.path.join(target, os.path.basename(s)) for s in srcdirs]
+    for srcdir, tgtdir in zip(srcdirs, tgtdirs):
+        logger.debug("link from {} to {}".format(srcdir, tgtdir))
+        if os.path.exists(tgtdir):
+            logger.warning(
+                    "remove existing target {} before link".format(tgtdir))
+            if os.path.islink(tgtdir):
+                os.unlink(tgtdir)
+            else:
+                if shutil.rmtree.avoids_symlink_attacks:
+                    shutil.rmtree(tgtdir)
+                else:
+                    raise RuntimeError(
+                        "{} need to be deleted first to create"
+                        " a symlink from {}".format(tgtdir, srcdir))
+        os.symlink(srcdir, tgtdir)
+    return tgtdirs
+
+
+class LoggingHandler(logging.StreamHandler):
+    """Customize logging handler to cleanup some noises."""
+
+    def emit(self, record):
+        if record.name == "dirsync":
+            if logging.getLogger().level > logging.DEBUG:
+                return
+            record.level = logging.DEBUG
+            record.levelname = logging.getLevelName(logging.DEBUG)
+        return super().emit(record)
 
 
 def _represent_odict(dump, tag, mapping, flow_style=None):

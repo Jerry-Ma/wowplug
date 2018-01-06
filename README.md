@@ -63,14 +63,14 @@ sync:
     `wowplugcache` will be downloaded and installed.
 
     Usage:
-        wowplug sync [<file>] [--update] [--delete] [--output=<dir>]
+        wowplug sync [<file>] [--update] [--delete] [--target=<dir>]
 
     Options:
         -h --help           Show an extensive help message
         -u --update         Update outdated addons if possible.
         -d --delete         Delete the unused addons instead of
                             placing them in `wowplugcache`.
-        -o <dir> --output=<dir>
+        -t <dir> --target=<dir>
                             Sync to the set <dir> instead of the
                             `config.scan.dir` specified in <file>.
 clean:

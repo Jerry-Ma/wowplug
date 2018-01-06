@@ -16,8 +16,8 @@ import logging.config
 from textwrap import indent
 import pkg_resources
 from docopt import docopt
-from schema import Schema, Or, SchemaError
-from .utils import expanded_abspath
+from schema import Schema, Or, SchemaError, Use
+from .utils import expanded_abspath, yaml, LoggingHandler
 
 
 __all__ = ['cli', ]
@@ -75,16 +75,28 @@ Options:
                         Dump the scan result to a file.
                         This file can be used for `sync`.
 """
+        def find_addondir(path):
+            path = expanded_abspath(path)
+            parent, base = os.path.split(path)
+            if base == "AddOns":
+                return path
+            if base == "Interface":
+                return os.path.join(path, 'AddOns')
+            _path = os.path.join(path, 'Interface', 'AddOns')
+            if os.path.exists(_path):
+                return _path
+            return path
+
         args, fc, tc = _sync_args_with_config(
                 args, config,
                 {
                     # use config entry if <dir> not specified
-                    # always update config entry
+                    # update to config entry if specified
                     '<dir>': {
                         'key': 'scan.dir',
-                        'norm': expanded_abspath,
+                        'norm': find_addondir,
                         'from': lambda a, c: a is None,
-                        'to': lambda a, c: True,
+                        'to': lambda a, c: a is not None,
                         },
                     # do not use config entry
                     # update to config entry if specified
@@ -108,7 +120,7 @@ Options:
             '--output': object,
             }, ignore_extra_keys=True).validate(args)
         from . import scan
-        scan.scan(args['<dir>'], output_file=args['--output'])
+        scan.scan(args['<dir>'], output=args['--output'])
 
     @register_cmd('sync')
     def cmd_sync(args):
@@ -121,31 +133,32 @@ are in the list but do not exist in the AddOns directory or
 `wowplugcache` will be downloaded and installed.
 
 Usage:
-    wowplug sync [<file>] [--update] [--delete] [--output=<dir>]
+    wowplug sync [<file>] [--update] [--delete] [--target=<dir>]
 
 Options:
     -h --help           Show an extensive help message
     -u --update         Update outdated addons if possible.
     -d --delete         Delete the unused addons instead of
                         placing them in `wowplugcache`.
-    -o <dir> --output=<dir>
+    -t <dir> --target=<dir>
                         Sync to the set <dir> instead of the
                         `config.scan.dir` specified in <file>.
 """
+        logger = logging.getLogger(LOGGER_NAME)
         args, fc, tc = _sync_args_with_config(
                 args, config,
                 {
                     # use config entry if <file> not specified
-                    # always update to config entry
+                    # always update to config entry if specified
                     '<file>': {
                         'key': 'sync.file',
                         'norm': expanded_abspath,
                         'from': lambda a, c: a is None,
-                        'to': lambda a, c: True,
+                        'to': lambda a, c: a is not None,
                         },
                     # use config entry if not specified
                     # update to config entry if specified
-                    '--output': {
+                    '--target': {
                         'key': 'scan.dir',
                         'norm': expanded_abspath,
                         'from': lambda a, c: a is None,
@@ -154,22 +167,39 @@ Options:
                     }
                 )
         # validate the args
+
+        def load_yaml(f):
+            if not os.path.exists(f):
+                raise SchemaError()
+            with open(f, 'r') as fo:
+                y = yaml.safe_load(fo)
+            return y
         args = Schema({
-            '<file>': Or(
-                os.path.exists,
-                error="`{}` does not exist".format(args['<file>'])
+            '<file>': Use(
+                load_yaml,
+                error="`{}` does not exist or is not a valid YAML file".format(
+                        args['<file>'])
                       if '<file>' not in fc else
                       "no valid sync file found in saved config {} from"
                       " previous sync or scan. one has to be specified via"
                       " command line".format(config.filepath)),
-            '--output': object,
+            '--target': Or(
+                None, expanded_abspath
+                ),
             '--update': object,
             '--delete': object,
             }, ignore_extra_keys=True).validate(args)
+        # we need to check sync result fc. in case target is pulled from
+        # config, we use the entry from <file>
+        if '--target' in fc:
+            args['--target'] = args['<file>']['config']['scan']['dir']
+            logger.debug(
+                    "use --target=`{}` from <file>.config.scan.dir"
+                    .format(args['--target']))
         from . import sync
         sync.sync(
                 args['<file>'],
-                syncdir=args['--output'],
+                target=args['--target'],
                 update=args['--update'],
                 delete=args['--delete']
                 )
@@ -205,7 +235,7 @@ Options:
         },
         'handlers': {
             'default': {
-                'class': 'logging.StreamHandler',
+                '()': LoggingHandler,
                 'formatter': 'short',  # standard
             },
         },
@@ -279,7 +309,11 @@ def _sync_args_with_config(args, config, sync_policy):
         if tf(av, cv):
             logger.debug("sync {}=`{}` to `{}` in config {}".format(
                 ak, av, ck, config.filepath))
-            args[ak] = nm(args[ak])
-            config.set(ck, args[ak])
+            nv = nm(av)
+            if nv != av:
+                logger.debug("use {}=`{}` instead of `{}`".format(
+                    ak, nv, av))
+            args[ak] = nv
+            config.set(ck, nv)
             tc.append(ak)
     return args, fc, tc

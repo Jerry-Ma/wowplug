@@ -7,10 +7,10 @@ from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
 import os
-import errno
+import glob
 import logging
 from appdirs import AppDirs
-from .utils import yaml
+from .utils import yaml, mkdirs
 
 
 __all__ = ['Config', 'config']
@@ -25,6 +25,7 @@ class Config(object):
     the config. See documentations of :mod:`appdirs` for details"""
 
     _default_filename = "wowplug.yaml"
+    _default_cachedirname = 'wowplugcache'
 
     load_saved_config = False
     """Prevent from loading the saved config file if `False`, which is
@@ -42,8 +43,7 @@ sync:
 
 github:
     providers:
-      - repo: fgprodigal/RayUI
-        path: Interface/AddOns
+      - fgprodigal/RayUI/Interface/AddOns
 
 curseforge:
     search:
@@ -51,13 +51,22 @@ curseforge:
     match:
         min_score: 80
         max_try: 5
-    """.format(self._default_filename)
+
+cache:
+    dir: {}
+    """.format(self.default_filepath, self.default_cachedir)
 
     @property
     def default_filepath(self):
-        """Directory to which the config file is saved."""
+        """Default path to the saved config file."""
         return os.path.abspath(os.path.join(
                 self._dirs.user_config_dir, self._default_filename))
+
+    @property
+    def default_cachedir(self):
+        """Default directory to save cached files"""
+        return os.path.abspath(os.path.join(
+                self._dirs.user_config_dir, self._default_cachedirname))
 
     def __init__(self, config_file=None):
         """Create a `Config` object. If `config_file` is set, entries
@@ -129,13 +138,43 @@ curseforge:
         f = self.filepath
         self.logger.debug("save config to {}".format(f))
         if not os.path.exists(os.path.dirname(f)):
-            try:
-                os.makedirs(os.path.dirname(f))
-            except OSError as exc:  # Guard against race condition
-                if exc.errno != errno.EEXIST:
-                    raise
+            mkdirs(os.path.dirname(f))
         with open(f, 'w') as fo:
             fo.write(s)
+
+    @property
+    def cachedir(self):
+        """Return the cache dir. If not yet created, create it and return."""
+        d = self.get("cache.dir")
+        if os.path.exists(d):
+            if os.path.isdir(d):
+                return d
+            else:
+                raise RuntimeError(
+                        "unable to create cache dir {}"
+                        " due to existing file of same name".format(d))
+        else:
+            return mkdirs(d)
+
+    def save_to_cachedir(self, filename, content):
+        """Save the file `filename` to :attr:`cachedir`"""
+        cachedir = self.cachedir
+        basename = os.path.basename(filename)
+        if basename != filename:
+            raise ValueError(
+                    "filename has to be a basename, not {}".format(filename))
+        outname = os.path.join(cachedir, filename)
+        with open(outname, 'wb') as fo:
+            fo.write(content)
+        self.logger.debug("file {} size {:.2f}MB saved to {}".format(
+            filename, len(content) / 1e6, cachedir))
+        return outname
+
+    def get_from_cachedir(self, pattern):
+        """Get list of files matching glob pattern `pattern`
+        within :attr:`cache.dir`"""
+        cachedir = self.cachedir
+        return glob.glob(os.path.join(cachedir, pattern))
 
 
 config = Config()
