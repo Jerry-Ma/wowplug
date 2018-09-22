@@ -98,6 +98,7 @@ def zipdir(src, save=None):
         to the filename. Otherwise a :class:`BytesIO` object is
         returned with its seek position at the start.
     """
+    logger = logging.getLogger("zip")
     _save = save
     if save is None:
         save = BytesIO()
@@ -107,7 +108,10 @@ def zipdir(src, save=None):
         for filename in files:
             absname = os.path.abspath(os.path.join(dirname, filename))
             arcname = absname.split(abssrc)[-1]
-            zf.write(absname, arcname)
+            try:
+                zf.write(absname, arcname)
+            except FileNotFoundError:
+                logger.warning("missing or broken file {}".format(absname))
     zf.close()
     if _save is None:
         save.seek(0)
