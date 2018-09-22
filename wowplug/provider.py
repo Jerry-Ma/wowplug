@@ -26,7 +26,7 @@ from .config import config
 from .utils import (
         instance_method_lru_cache, log_and_raise, urljoin,
         unzipdir, linkdir,
-        run_and_log, )
+        run_and_log, expanded_abspath)
 
 
 __all__ = [
@@ -45,7 +45,7 @@ class AddonProvider(abc.ABC):
     """
 
     providers = OrderedDict()
-    """List of available :obj:`AddonProvider` instances."""
+    """Dict of available :obj:`AddonProvider` instances."""
 
     session = requests.Session()
     """:obj:`requests.Session` object to be used for the sources to query
@@ -722,5 +722,88 @@ class CurseProject(AddonSource):
         self.logger.debug("sync {} to {}".format(self.name, target))
         pattern = "*/*.[tT][oO][cC]"
         tgtdirs = self.synczip(target, pattern)
+        self._set_sync_status(
+                "success", [os.path.basename(d) for d in tgtdirs])
+
+
+class LocalDir(AddonProvider):
+    """Class that manages addons provided through local filesystem.
+
+    :ivar paths: List of directories that provide addons.
+    """
+
+    name = "local"
+    """Name of this provider."""
+
+    def __init__(self):
+        super().__init__()
+        self.paths = []
+
+    @property
+    def source_class(self):
+        """Class of the sources this provider provides."""
+        return LocalAddon
+
+    @property
+    def metadata(self):
+        """Dict of some useful information.
+        """
+        return {}
+
+    def setup_sources(self, toc_names):
+        """Initialize sources with :attr:`self.paths`.
+
+        .. note::
+
+            The argument `toc_names` is ignored.
+        """
+        sources = [self.source_class(self, path) for path in self.paths]
+        self._finish_setup_sources(sources)
+
+
+class LocalAddon(AddonSource):
+    """Class that provides access to addons provided through a local
+    directory.
+    """
+
+    def __init__(self, provider, path, info=None):
+        """
+        :param path: path to the addon.
+        :param info: Dict of any metadata to be kept along with.
+
+        .. note::
+
+            `path` should point to the addon folder itself, i.e., it
+            should contain the addon's TOC file. This also means
+            a :obj:`LocalAddon` always have one TOC.
+        """
+        self.info = {} if info is None else info
+        self.path = expanded_abspath(path)
+        super().__init__(provider)
+        self.logger.debug("source {} initialized".format(self.name))
+
+    @property
+    def name(self):
+        """Name to identify this addon `Github` repository."""
+        # return self.repo.strip("/ ").split("/")[-1]
+        return os.path.basename(self.path)
+
+    @property
+    def addons(self):
+        """Return the TOC names of addons provided in this `Github`
+        repository.
+        """
+        try:
+            return [os.path.dirname(t) for t in glob.glob(
+                os.path.join(self.path, '*.[tT][oO][cC]'))]
+        except RuntimeError:
+            return []
+
+    def sync(self, target):
+        """Sync the addon to target directory ``target``."""
+        self._reset_sync_status()
+        self.logger.debug("start sync to {}".format(target))
+        pattern = os.path.join(self.path, "*.[tT][oO][cC]")
+        tgtdirs = linkdir(self.path, target, pattern=pattern)
         self._set_sync_status(
                 "success", [os.path.basename(d) for d in tgtdirs])

@@ -98,10 +98,15 @@ def resolve_addon(toc):
     # parse TOC
     info['toc'] = {}
     re_hdr = re.compile(r'^##\s*(\w+)\s*:\s*(.+)$')
+    logger = logging.getLogger('resolve')
+    logger.info("read {}".format(toc))
     with open(toc, 'r') as fo:
-        for ln in fo.readlines():
-            m = re_hdr.match(ln)
-            if m is None:
-                continue
-            info['toc'][m.group(1)] = m.group(2).strip()
+        try:
+            for ln in fo.readlines():
+                m = re_hdr.match(ln)
+                if m is None:
+                    continue
+                info['toc'][m.group(1)] = m.group(2).strip()
+        except UnicodeDecodeError:
+            pass
     return info
