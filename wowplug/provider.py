@@ -21,6 +21,7 @@ import shutil
 import requests
 from bs4 import BeautifulSoup
 import fuzzywuzzy.process
+import cfscrape
 
 from .config import config
 from .utils import (
@@ -47,7 +48,8 @@ class AddonProvider(abc.ABC):
     providers = OrderedDict()
     """Dict of available :obj:`AddonProvider` instances."""
 
-    session = requests.Session()
+    # session = requests.Session()
+    session = cfscrape.create_scraper()
     """:obj:`requests.Session` object to be used for the sources to query
     remote websites."""
 
